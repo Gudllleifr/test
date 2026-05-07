@@ -1,0 +1,1039 @@
+openapi: 3.0.3
+info:
+  title: API Contract Hub
+  description: >
+    Централизованный реестр API-контрактов для микросервисной архитектуры
+
+    ООО "ПринтСтройМонтажСервис" (120 сервисов, 15 команд).
+
+
+    Покрывает три экрана: реестр сервисов (/services), детали сервиса
+    (/services/:id),
+
+    граф зависимостей (/graph). Экран деталей включает встроенные блоки
+    сравнения
+
+    версий (UC-002) и анализа влияния (UC-004) (это не отдельные страницы).
+  version: 1.0.0
+security:
+  - BearerAuth: []
+servers:
+  - url: https://api.contract-hub.internal/v1
+    description: Внутренняя сеть (production)
+tags:
+  - name: services
+    description: Реестр сервисов, версии контрактов, сравнение, анализ влияния
+  - name: graph
+    description: Граф зависимостей
+paths:
+  /services:
+    get:
+      tags:
+        - services
+      summary: Список сервисов (экран 1)
+      description: |
+        Постраничный список всех зарегистрированных сервисов с фильтрацией.
+        Источник данных для таблицы и счётчиков на экране "Реестр сервисов"
+      operationId: listServices
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: search
+          in: query
+          description: Поиск по названию, регистронезависимый (BR-001)
+          schema:
+            type: string
+            example: payments
+        - name: team
+          in: query
+          description: Фильтр по команде-владельцу
+          schema:
+            type: string
+            example: Payments Team
+        - name: domain
+          in: query
+          description: Фильтр по домену
+          schema:
+            $ref: '#/components/schemas/ServiceDomain'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags:
+        - services
+      summary: Зарегистрировать сервис (UC-001)
+      description: >
+        Создаёт сервис и сохраняет первый контракт (v1). Файл OpenAPI проходит
+
+        валидацию: синтаксис, схема 2.0/3.0/3.1, наличие info.title и
+        info.version.
+
+        При ошибке валидации - 400, при дублировании имени - 409 (BR-001).
+
+        Заголовок x-idempotency-key предотвращает дублирование при ретраях.
+      operationId: createService
+      parameters:
+        - name: x-idempotency-key
+          in: header
+          required: false
+          description: >-
+            UUID для идемпотентности (повторный запрос с тем же ключом → тот же
+            201)
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ServiceCreateRequest'
+      responses:
+        '201':
+          description: Сервис создан, контракт сохранён как v1
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceDetail'
+        '400':
+          description: Ошибка валидации OpenAPI-файла или полей формы
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Сервис с таким именем уже существует (BR-001)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /services/{serviceId}:
+    parameters:
+      - $ref: '#/components/parameters/ServiceIdParam'
+    get:
+      tags:
+        - services
+      summary: Детали сервиса (экран 2)
+      description: >
+        Полные данные сервиса: метаданные, текущий контракт, входящие и
+        исходящие
+
+        зависимости. Источник данных для блоков «Информация» и «Зависимости» на
+        экране 2.
+      operationId: getService
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /services/{serviceId}/versions:
+    parameters:
+      - $ref: '#/components/parameters/ServiceIdParam'
+    get:
+      tags:
+        - services
+      summary: История версий контракта (UC-005, вкладка на экране 2)
+      description: |
+        Версии в обратном хронологическом порядке (новые сверху).
+        Хранятся последние 10 версий; более старые архивируются (BR-017).
+      operationId: listVersions
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags:
+        - services
+      summary: Загрузить новую версию контракта (UC-001 поток A1)
+      description: |
+        Добавляет новую версию: номер назначается автоматически vN+1 (BR-004).
+        После сохранения автоматически запускает сравнение с предыдущей версией;
+        результат возвращается в поле `autoCompare` ответа.
+      operationId: uploadVersion
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - contractFile
+              properties:
+                contractFile:
+                  type: string
+                  format: binary
+                  description: Файл .json или .yaml, максимум 5 МБ (BR-002, BR-003)
+      responses:
+        '201':
+          description: Версия загружена и провалидирована
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionDetail'
+        '400':
+          description: Ошибка валидации OpenAPI-файла
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /services/{serviceId}/compare:
+    parameters:
+      - $ref: '#/components/parameters/ServiceIdParam'
+    get:
+      tags:
+        - services
+      summary: Сравнить версии контракта (UC-002, встроен в экран 2)
+      description: >
+        Сравнивает две версии через oasdiff; возвращает классифицированный
+        список изменений.
+
+        Результаты не кэшируются (BR-009).
+      operationId: compareVersions
+      parameters:
+        - name: from
+          in: query
+          required: true
+          description: Базовая (старая) версия является точкой отсчёта изменений
+          schema:
+            type: string
+            example: v3
+        - name: to
+          in: query
+          required: true
+          description: Целевая (новая) версия
+          schema:
+            type: string
+            example: v4
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompareResult'
+        '400':
+          description: Не указаны оба параметра или from == to
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Одна из версий повреждена и не поддаётся парсингу (E1 UC-002)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /services/{serviceId}/impact:
+    parameters:
+      - $ref: '#/components/parameters/ServiceIdParam'
+    get:
+      tags:
+        - services
+      summary: Анализ влияния изменений (UC-004, встроен в экран 2)
+      description: >
+        Находит все сервисы с зарегистрированной входящей зависимостью от
+        данного,
+
+        показывает изменившиеся endpoints и контакты владельцев.
+
+        Анализ основан только на вручную зарегистрированных зависимостях
+        (BR-014).
+
+        Система не знает, какие именно endpoints вызывает каждый потребитель,
+        поэтому
+
+        показываются все изменившиеся (BR-015).
+      operationId: getImpact
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            example: v3
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            example: v4
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImpactReport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /graph:
+    get:
+      tags:
+        - graph
+      summary: Граф зависимостей (экран 3)
+      description: |
+        Возвращает все узлы (сервисы) и рёбра (зависимости) для React Flow.
+        Включает изолированные узлы (сервисы без зависимостей) (BR-013).
+      operationId: getGraph
+      parameters:
+        - name: team
+          in: query
+          required: false
+          description: Фильтр - показать только сервисы команды и смежные зависимости
+          schema:
+            type: string
+            example: Payments Team
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DependencyGraph'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /graph/dependencies:
+    post:
+      tags:
+        - graph
+      summary: Зарегистрировать зависимость (UC-003 поток A1)
+      description: >
+        Создаёт направленную связь: sourceServiceId (потребитель) →
+        targetServiceId
+
+        (поставщик). Стрелка в графе направлена от потребителя к поставщику
+        (BR-010).
+
+        В MVP зависимости регистрируются только вручную (BR-011).
+      operationId: createDependency
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DependencyCreateRequest'
+      responses:
+        '201':
+          description: Зависимость создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DependencyEdge'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Один или оба сервиса не найдены
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Такая зависимость уже зарегистрирована
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /graph/dependencies/{dependencyId}:
+    parameters:
+      - name: dependencyId
+        in: path
+        required: true
+        description: UUID зависимости
+        schema:
+          type: string
+          format: uuid
+    delete:
+      tags:
+        - graph
+      summary: Удалить зависимость (UC-003)
+      operationId: deleteDependency
+      responses:
+        '204':
+          description: Зависимость удалена (нет тела ответа)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        JWT от корпоративного IdP. Обязательный claim: `role` (developer /
+        architect / qa).
+
+        Пример: Authorization: Bearer eyJhbGci...
+  parameters:
+    ServiceIdParam:
+      name: serviceId
+      in: path
+      required: true
+      description: UUID сервиса
+      schema:
+        type: string
+        format: uuid
+    PageParam:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    LimitParam:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Не аутентифицирован (нет или истёк JWT)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Недостаточно прав
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Ресурс не найден
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Внутренняя ошибка сервера
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    ServiceDomain:
+      description: Функциональный домен сервиса
+      type: string
+      enum:
+        - payments
+        - orders
+        - users
+        - logistics
+        - platform
+        - analytics
+        - other
+      example: payments
+    OpenApiSpecVersion:
+      description: Версия спецификации OpenAPI загруженного контракта (BR-003)
+      type: string
+      enum:
+        - '2.0'
+        - '3.0'
+        - '3.1'
+      example: '3.0'
+    ChangeType:
+      description: >
+        Тип изменения по правилам oasdiff (BR-007):
+
+        - breaking нарушает обратную совместимость (удалён endpoint, изменён
+        тип)
+
+        - deprecated - помечен как устаревший
+
+        - new - новый endpoint или необязательный параметр
+
+        - modified - изменено описание, пример, необязательное поле
+      type: string
+      enum:
+        - breaking
+        - deprecated
+        - new
+        - modified
+      example: breaking
+    ErrorResponse:
+      type: object
+      required:
+        - errorCode
+        - message
+      properties:
+        errorCode:
+          type: string
+          example: SERVICE_NAME_TAKEN
+        message:
+          type: string
+          example: Сервис с именем payments-svc уже зарегистрирован
+        details:
+          type: array
+          description: Детали валидации (при 400)
+          items:
+            type: object
+            required:
+              - field
+              - issue
+            properties:
+              field:
+                type: string
+                example: name
+              issue:
+                type: string
+                example: Имя сервиса должно содержать от 3 до 100 символов
+    PaginationMeta:
+      type: object
+      required:
+        - total
+        - page
+        - limit
+      properties:
+        total:
+          type: integer
+          example: 120
+        page:
+          type: integer
+          example: 1
+        limit:
+          type: integer
+          example: 20
+    OwnerInfo:
+      description: >-
+        Контактная информация владельца нужна для блока зависимостей и анализа
+        влияния
+      type: object
+      required:
+        - team
+        - email
+      properties:
+        team:
+          type: string
+          example: Payments Team
+        email:
+          type: string
+          format: email
+          example: payments-team@company.ru
+    ChangeSummary:
+      description: Счётчики изменений по типам — нужен в таблице реестра и шапке сравнения
+      type: object
+      required:
+        - breaking
+        - deprecated
+        - new
+        - modified
+      properties:
+        breaking:
+          type: integer
+          minimum: 0
+          example: 2
+        deprecated:
+          type: integer
+          minimum: 0
+          example: 1
+        new:
+          type: integer
+          minimum: 0
+          example: 3
+        modified:
+          type: integer
+          minimum: 0
+          example: 4
+    ServiceBase:
+      description: >
+        Базовые атрибуты, общие для запроса создания и всех ответов.
+
+        Выделен отдельно, чтобы не дублировать поля в ServiceListItem и
+        ServiceDetail
+
+        через allOf.
+      type: object
+      required:
+        - name
+        - domain
+        - owner
+      properties:
+        name:
+          type: string
+          description: Уникальное название, 3–100 символов, регистр не учитывается (BR-001)
+          minLength: 3
+          maxLength: 100
+          example: payments-svc
+        domain:
+          $ref: '#/components/schemas/ServiceDomain'
+        owner:
+          $ref: '#/components/schemas/OwnerInfo'
+        repositoryUrl:
+          type: string
+          format: uri
+          nullable: true
+          example: https://git.company.ru/payments/payments-svc
+    ServiceCreateRequest:
+      description: >
+        Запрос регистрации сервиса. allOf расширяет ServiceBase полем
+        contractFile:
+
+        файл обязателен при создании, но отсутствует в ответах. Решил выделить.
+      allOf:
+        - $ref: '#/components/schemas/ServiceBase'
+        - type: object
+          required:
+            - contractFile
+          properties:
+            contractFile:
+              type: string
+              format: binary
+              description: Файл .json или .yaml, максимум 5 МБ (BR-002)
+    ServiceListItem:
+      description: >
+        Краткая информация для строки таблицы реестра (экран 1).
+
+        allOf расширяет ServiceBase: в списке нужны id, версия и дата, но не
+        зависимости
+
+        (они грузились бы 120 раз для полного реестра).
+      allOf:
+        - $ref: '#/components/schemas/ServiceBase'
+        - type: object
+          required:
+            - id
+            - updatedAt
+            - createdAt
+          properties:
+            id:
+              type: string
+              format: uuid
+              example: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+            currentVersion:
+              type: string
+              nullable: true
+              description: Текущая активная версия. null если контракт не загружен.
+              example: v4
+            endpointsCount:
+              type: integer
+              minimum: 0
+              example: 24
+            latestChangeSummary:
+              $ref: '#/components/schemas/ChangeSummary'
+            updatedAt:
+              type: string
+              format: date-time
+              example: '2025-04-14T18:32:00Z'
+            createdAt:
+              type: string
+              format: date-time
+              example: '2025-03-01T09:00:00Z'
+    ServiceListResponse:
+      type: object
+      required:
+        - items
+        - pagination
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceListItem'
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+    DependencyRef:
+      description: Краткая ссылка на связанный сервис (для блока зависимостей на экране 2)
+      type: object
+      required:
+        - serviceId
+        - serviceName
+        - team
+      properties:
+        serviceId:
+          type: string
+          format: uuid
+        serviceName:
+          type: string
+          example: orders-svc
+        team:
+          type: string
+          example: Orders Team
+    ServiceDetail:
+      description: >
+        Полные данные для экрана 2. allOf расширяет ServiceListItem
+        зависимостями:
+
+        они нужны только на странице конкретного сервиса, не в списке.
+      allOf:
+        - $ref: '#/components/schemas/ServiceListItem'
+        - type: object
+          properties:
+            openApiSpecVersion:
+              $ref: '#/components/schemas/OpenApiSpecVersion'
+            incomingDependencies:
+              type: array
+              description: Сервисы, которые используют API этого сервиса
+              items:
+                $ref: '#/components/schemas/DependencyRef'
+            outgoingDependencies:
+              type: array
+              description: Сервисы, чей API использует этот сервис
+              items:
+                $ref: '#/components/schemas/DependencyRef'
+    VersionSummary:
+      description: Одна строка в таблице истории версий (вкладка на экране 2)
+      type: object
+      required:
+        - id
+        - versionNumber
+        - uploadedAt
+        - uploadedBy
+        - isActive
+      properties:
+        id:
+          type: string
+          format: uuid
+        versionNumber:
+          type: string
+          description: Назначается автоматически системой (BR-004)
+          example: v4
+        uploadedAt:
+          type: string
+          format: date-time
+          example: '2025-04-14T18:32:00Z'
+        uploadedBy:
+          type: string
+          example: ivan.petrov
+        openApiSpecVersion:
+          $ref: '#/components/schemas/OpenApiSpecVersion'
+        endpointsCount:
+          type: integer
+          minimum: 0
+          example: 24
+        changeSummary:
+          $ref: '#/components/schemas/ChangeSummary'
+        isActive:
+          type: boolean
+          description: true — текущая активная версия
+          example: true
+    VersionDetail:
+      description: >
+        Полные данные версии после загрузки. allOf расширяет VersionSummary:
+
+        содержимое спецификации и автосравнение нужны только при
+        загрузке/просмотре.
+      allOf:
+        - $ref: '#/components/schemas/VersionSummary'
+        - type: object
+          properties:
+            specContent:
+              type: string
+              description: Содержимое OpenAPI-спецификации (YAML или JSON)
+              example: |-
+                openapi: '3.0.3'
+                info:
+                  title: Payments API...
+            autoCompare:
+              description: >
+                Автоматическое сравнение с предыдущей версией (выполняется при
+                загрузке).
+
+                null для первой версии контракта.
+              nullable: true
+              allOf:
+                - $ref: '#/components/schemas/CompareResult'
+    VersionListResponse:
+      type: object
+      required:
+        - serviceId
+        - items
+      properties:
+        serviceId:
+          type: string
+          format: uuid
+        items:
+          type: array
+          description: Версии новые-сверху; архивированные не включаются (BR-017)
+          items:
+            $ref: '#/components/schemas/VersionSummary'
+    ChangeItem:
+      description: >
+        Одно изменение, обнаруженное oasdiff. Плоская структура с
+        enum-дискриминатором
+
+        `type` достаточна: все 4 типа (breaking/deprecated/new/modified) имеют
+        одинаковый
+
+        набор полей. Введение oneOf усложнило бы генерацию клиентского кода без
+        пользы.
+      type: object
+      required:
+        - type
+        - endpoint
+        - description
+      properties:
+        type:
+          $ref: '#/components/schemas/ChangeType'
+        endpoint:
+          type: string
+          description: Затронутый endpoint в формате «МЕТОД /путь»
+          example: DELETE /v1/payments/{id}
+        description:
+          type: string
+          description: Пояснение изменения и его последствий
+          example: Endpoint удалён. Зависимые сервисы получат 404.
+        before:
+          type: string
+          description: Фрагмент спецификации до изменения (YAML). null для новых элементов.
+          nullable: true
+          example: |-
+            responses:
+              '200':
+                description: OK
+        after:
+          type: string
+          description: Фрагмент спецификации после изменения (YAML). null для удалённых.
+          nullable: true
+    CompareResult:
+      description: >-
+        Результат сравнения двух версий (источник для блока сравнения на экране
+        2)
+      type: object
+      required:
+        - serviceId
+        - fromVersion
+        - toVersion
+        - summary
+        - changes
+      properties:
+        serviceId:
+          type: string
+          format: uuid
+        fromVersion:
+          type: string
+          example: v3
+        toVersion:
+          type: string
+          example: v4
+        summary:
+          $ref: '#/components/schemas/ChangeSummary'
+        changes:
+          type: array
+          description: >-
+            Полный список изменений (сортировка: breaking, deprecated, new,
+            modified)
+          items:
+            $ref: '#/components/schemas/ChangeItem'
+    ImpactedService:
+      description: Сервис, потенциально затронутый изменениями поставщика
+      type: object
+      required:
+        - serviceId
+        - serviceName
+        - owner
+        - affectedEndpoints
+      properties:
+        serviceId:
+          type: string
+          format: uuid
+        serviceName:
+          type: string
+          example: orders-svc
+        owner:
+          $ref: '#/components/schemas/OwnerInfo'
+        affectedEndpoints:
+          type: array
+          description: >
+            Все изменившиеся endpoints поставщика. Система показывает все, т.к.
+            не
+
+            отслеживает, какие именно вызывает каждый потребитель (BR-015).
+          items:
+            $ref: '#/components/schemas/ChangeItem'
+    ImpactReport:
+      description: Отчёт анализа влияния (источник для блока «Анализ влияния» на экране 2)
+      type: object
+      required:
+        - serviceId
+        - fromVersion
+        - toVersion
+        - affectedServicesCount
+        - affectedServices
+      properties:
+        serviceId:
+          type: string
+          format: uuid
+        fromVersion:
+          type: string
+          example: v3
+        toVersion:
+          type: string
+          example: v4
+        affectedServicesCount:
+          type: integer
+          example: 4
+        criticallyAffectedCount:
+          type: integer
+          description: Сервисы, для которых есть breaking-изменения
+          example: 3
+        affectedServices:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImpactedService'
+    GraphNode:
+      description: Узел графа — сервис в React Flow (экран 3)
+      type: object
+      required:
+        - serviceId
+        - serviceName
+        - team
+        - incomingCount
+        - outgoingCount
+      properties:
+        serviceId:
+          type: string
+          format: uuid
+        serviceName:
+          type: string
+          example: payments-svc
+        team:
+          type: string
+          example: Payments Team
+        domain:
+          $ref: '#/components/schemas/ServiceDomain'
+        hasBreakingChanges:
+          type: boolean
+          description: true - выделить узел на графе (красная граница)
+          example: true
+        incomingCount:
+          type: integer
+          minimum: 0
+          example: 3
+        outgoingCount:
+          type: integer
+          minimum: 0
+          example: 2
+    DependencyEdge:
+      description: >
+        Ребро графа. Направление: sourceServiceId (потребитель) →
+        targetServiceId
+
+        (поставщик). Стрелка в React Flow идёт в этом же направлении (BR-010).
+      type: object
+      required:
+        - id
+        - sourceServiceId
+        - targetServiceId
+        - registeredAt
+        - registeredBy
+      properties:
+        id:
+          type: string
+          format: uuid
+        sourceServiceId:
+          type: string
+          format: uuid
+          description: ID потребителя (кто вызывает)
+          example: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+        targetServiceId:
+          type: string
+          format: uuid
+          description: ID поставщика (чей API используется)
+          example: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+        registeredAt:
+          type: string
+          format: date-time
+          example: '2025-03-15T10:00:00Z'
+        registeredBy:
+          type: string
+          example: ivan.petrov
+    DependencyGraph:
+      description: Полный граф для React Flow (все узлы и рёбра)
+      type: object
+      required:
+        - nodes
+        - edges
+      properties:
+        nodes:
+          type: array
+          description: Все сервисы, включая изолированные (BR-013)
+          items:
+            $ref: '#/components/schemas/GraphNode'
+        edges:
+          type: array
+          description: Все зарегистрированные зависимости
+          items:
+            $ref: '#/components/schemas/DependencyEdge'
+    DependencyCreateRequest:
+      description: Запрос регистрации зависимости между двумя сервисами
+      type: object
+      required:
+        - sourceServiceId
+        - targetServiceId
+      properties:
+        sourceServiceId:
+          type: string
+          format: uuid
+          description: ID потребителя (кто будет вызывать API)
+          example: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+        targetServiceId:
+          type: string
+          format: uuid
+          description: ID поставщика (чей API будет вызываться)
+          example: 3fa85f64-5717-4562-b3fc-2c963f66afa6
