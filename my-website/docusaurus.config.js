@@ -60,7 +60,6 @@ const config = {
         ],
         theme: {
           primaryColor: '#1890ff',
-          primaryColor: '#1890ff',
         },
       }
     ],
@@ -89,7 +88,7 @@ const config = {
             position: 'left',
           },
           {
-            href: https://github.com/Gudllleifr/test',
+            href: 'https://github.com/Gudllleifr/test',
             label: 'GitHub',
             position: 'right',
           },
