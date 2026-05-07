@@ -1,0 +1,7 @@
+label: Обзор продукта
+position: 2
+collapsible: true
+collapsed: false
+link:
+  type: generated-index
+  description: Концепция продукта, бизнес-контекст, стейкхолдеры и технологический стек

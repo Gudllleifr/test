@@ -1,0 +1,7 @@
+label: Моделирование
+position: 4
+collapsible: true
+collapsed: false
+link:
+  type: generated-index
+  description: BPMN, Use Case и Sequence-диаграммы для API Contract Hub

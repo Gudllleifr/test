@@ -1,0 +1,7 @@
+label: Платформизация
+position: 7
+collapsible: true
+collapsed: false
+link:
+  type: generated-index
+  description: Замена собственных компонентов готовыми сервисами и стратегия выхода API Contract Hub на рынок

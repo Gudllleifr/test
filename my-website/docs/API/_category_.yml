@@ -1,0 +1,7 @@
+label: Проектирование API
+position: 5
+collapsible: true
+collapsed: false
+link:
+  type: generated-index
+  description: Макеты, OpenAPI-спецификация и AsyncAPI-контракт API Contract Hub

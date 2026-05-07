@@ -1,0 +1,7 @@
+label: Требования
+position: 3
+collapsible: true
+collapsed: false
+link:
+  type: generated-index
+  description: Сбор требований, функциональные и нефункциональные требования к API Contract Hub MVP v1.0

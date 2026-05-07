@@ -1,0 +1,313 @@
+---
+title: AsyncAPI-контракт
+sidebar_position: 3
+description: Контракты асинхронного взаимодействия для событийно-ориентированных интеграций API Contract Hub
+---
+
+:::info Шаблон
+Этот файл является шаблоном. AsyncAPI-контракты разрабатываются по мере добавления асинхронных интеграций в систему. Для MVP v1.0 асинхронное взаимодействие ограничено внутренней очередью задач.
+:::
+
+:::note Версионирование
+Полноценная поддержка AsyncAPI (уведомления Slack/email, вебхуки) запланирована на версию 2.0 согласно дорожной карте
+:::
+
+## Контекст асинхронного взаимодействия {#context}
+
+В MVP v1.0 система использует асинхронность в одном внутреннем сценарии: запись в `audit_log` выполняется асинхронно, чтобы не блокировать основной поток обработки запроса. Внешние асинхронные интеграции (уведомления) в MVP отсутствуют.
+
+В версии 2.0 планируются следующие события:
+
+| Событие | Описание | Потребители |
+|---------|---------|------------|
+| `contract.version.uploaded` | Загружена новая версия контракта | CI/CD-плагин, уведомления |
+| `contract.breaking_changes.detected` | Обнаружены критические изменения | Email/Slack-уведомления владельцам зависимых сервисов |
+| `service.registered` | Зарегистрирован новый сервис | Аудит, аналитика |
+| `dependency.created` | Зарегистрирована новая зависимость | Аудит, инвалидация кеша графа |
+
+## Структура AsyncAPI-контракта {#structure}
+
+```yaml
+asyncapi: '2.6.0'
+
+info:
+  title: API Contract Hub
+  version: '1.0.0'
+  description: |
+    WebSocket-канал для получения статуса и результата
+    асинхронного сравнения версий контракта (oasdiff).
+
+    Флоу:
+      1. Клиент загружает новую версию контракта: POST /services/{id}/versions
+      2. Сервер отвечает 202 Accepted с полем jobId в теле ответа
+      3. Клиент устанавливает WebSocket-соединение на канал comparison/{jobId}
+      4. Сервер запускает oasdiff в фоне и пушит события в канал
+      5. По получении CompareJobCompleted клиент отображает результат
+         без дополнительных HTTP-запросов
+
+servers:
+  production:
+    url: wss://api.contract-hub.internal/ws
+    protocol: wss
+    description: Внутренняя сеть (production)
+    security:
+      - bearerAuth: []
+
+channels:
+  comparison/{jobId}:
+    description: |
+      Персональный канал задачи сравнения.
+      Сервер закрывает соединение после отправки
+      CompareJobCompleted или CompareJobFailed.
+    parameters:
+      jobId:
+        description: UUID задачи, полученный в поле jobId ответа 202
+        schema:
+          type: string
+          format: uuid
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    subscribe:
+      operationId: receiveComparisonEvent
+      summary: Получение событий о ходе и результате задачи сравнения
+      description: |
+        Сервер отправляет события в следующем порядке:
+          1. CompareJobStarted  - oasdiff запущен (немедленно)
+          2. CompareJobCompleted - результат готов (≤ 3 с, NFR-001)
+             ИЛИ CompareJobFailed - разбор контракта не удался (E1 UC-002)
+      message:
+        oneOf:
+          - $ref: '#/components/messages/CompareJobStarted'
+          - $ref: '#/components/messages/CompareJobCompleted'
+          - $ref: '#/components/messages/CompareJobFailed'
+
+components:
+
+  messages:
+
+    CompareJobStarted:
+      name: CompareJobStarted
+      title: Задача сравнения запущена
+      summary: Подтверждение, что oasdiff принял файлы в обработку
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/CompareJobStartedPayload'
+      examples:
+        - name: Типичный старт
+          payload:
+            eventType: COMPARE_JOB_STARTED
+            jobId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+            serviceId: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+            fromVersion: v3
+            toVersion: v4
+            timestamp: "2026-04-23T10:00:00Z"
+
+    CompareJobCompleted:
+      name: CompareJobCompleted
+      title: Сравнение завершено успешно
+      summary: Полный результат oasdiff с классифицированными изменениями
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/CompareJobCompletedPayload'
+      examples:
+        - name: Два breaking-изменения обнаружены
+          payload:
+            eventType: COMPARE_JOB_COMPLETED
+            jobId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+            serviceId: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+            result:
+              serviceId: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+              fromVersion: v3
+              toVersion: v4
+              summary:
+                breaking: 2
+                deprecated: 1
+                new: 3
+                modified: 0
+              changes:
+                - type: breaking
+                  endpoint: "DELETE /v1/payments/{id}"
+                  description: "Endpoint удалён. Зависимые сервисы получат 404."
+                  before: "responses:\n  '200':\n    description: OK"
+                  after: null
+                - type: new
+                  endpoint: "GET /v1/payments/{id}/receipt"
+                  description: "Новый endpoint для получения квитанции."
+                  before: null
+                  after: "responses:\n  '200':\n    description: OK"
+            timestamp: "2026-04-23T10:00:02Z"
+
+    CompareJobFailed:
+      name: CompareJobFailed
+      title: Ошибка при сравнении (E1 UC-002)
+      summary: |
+        oasdiff не смог разобрать одну из версий контракта.
+        Соответствует исключительному потоку E1 в UC-002.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/CompareJobFailedPayload'
+      examples:
+        - name: Повреждённый контракт
+          payload:
+            eventType: COMPARE_JOB_FAILED
+            jobId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+            serviceId: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+            errorCode: PARSE_ERROR
+            message: "Версия v4 содержит ошибки и не поддаётся парсингу. Перезагрузите эту версию контракта."
+            affectedVersion: v4
+            timestamp: "2026-04-23T10:00:01Z"
+
+  schemas:
+
+    CompareJobStartedPayload:
+      type: object
+      required: [eventType, jobId, serviceId, fromVersion, toVersion, timestamp]
+      properties:
+        eventType:
+          type: string
+          const: COMPARE_JOB_STARTED
+        jobId:
+          type: string
+          format: uuid
+        serviceId:
+          type: string
+          format: uuid
+        fromVersion:
+          type: string
+          description: Базовая (старая) версия (BR-006)
+          example: v3
+        toVersion:
+          type: string
+          description: Целевая (новая) версия (BR-006)
+          example: v4
+        timestamp:
+          type: string
+          format: date-time
+
+    CompareJobCompletedPayload:
+      type: object
+      required: [eventType, jobId, serviceId, result, timestamp]
+      properties:
+        eventType:
+          type: string
+          const: COMPARE_JOB_COMPLETED
+        jobId:
+          type: string
+          format: uuid
+        serviceId:
+          type: string
+          format: uuid
+        result:
+          $ref: '#/components/schemas/CompareResult'
+        timestamp:
+          type: string
+          format: date-time
+
+    CompareJobFailedPayload:
+      type: object
+      required: [eventType, jobId, serviceId, errorCode, message, timestamp]
+      properties:
+        eventType:
+          type: string
+          const: COMPARE_JOB_FAILED
+        jobId:
+          type: string
+          format: uuid
+        serviceId:
+          type: string
+          format: uuid
+        errorCode:
+          type: string
+          enum: [PARSE_ERROR, TIMEOUT, INTERNAL_ERROR]
+          description: |
+            PARSE_ERROR   - oasdiff не смог разобрать одну из версий (E1 UC-002)
+            TIMEOUT       - oasdiff превысил лимит 3 с (NFR-001)
+            INTERNAL_ERROR - прочие внутренние ошибки
+        message:
+          type: string
+          description: Текст ошибки для отображения пользователю (NFR-009)
+        affectedVersion:
+          type: string
+          nullable: true
+          description: Версия контракта, в которой обнаружена ошибка
+          example: v4
+        timestamp:
+          type: string
+          format: date-time
+
+    CompareResult:
+      type: object
+      description: |
+        Идентична схеме CompareResult из OpenAPI-контракта REST API.
+        Дублирование намеренное: WebSocket-контракт самодостаточен
+        и не требует дополнительного HTTP-запроса GET /compare.
+      required: [serviceId, fromVersion, toVersion, summary, changes]
+      properties:
+        serviceId:
+          type: string
+          format: uuid
+        fromVersion:
+          type: string
+          example: v3
+        toVersion:
+          type: string
+          example: v4
+        summary:
+          $ref: '#/components/schemas/ChangeSummary'
+        changes:
+          type: array
+          description: "Сортировка: breaking → deprecated → new → modified (BR-007)"
+          items:
+            $ref: '#/components/schemas/ChangeItem'
+
+    ChangeSummary:
+      type: object
+      required: [breaking, deprecated, new, modified]
+      properties:
+        breaking:
+          type: integer
+          minimum: 0
+        deprecated:
+          type: integer
+          minimum: 0
+        new:
+          type: integer
+          minimum: 0
+        modified:
+          type: integer
+          minimum: 0
+
+    ChangeItem:
+      type: object
+      required: [type, endpoint, description]
+      properties:
+        type:
+          type: string
+          enum: [breaking, deprecated, new, modified]
+          description: Классификация по правилам oasdiff (BR-007)
+        endpoint:
+          type: string
+          description: Затронутый endpoint в формате «МЕТОД /путь»
+          example: "DELETE /v1/payments/{id}"
+        description:
+          type: string
+          description: Пояснение изменения и его последствий
+        before:
+          type: string
+          nullable: true
+          description: Фрагмент спецификации до изменения (YAML)
+        after:
+          type: string
+          nullable: true
+          description: Фрагмент спецификации после изменения (YAML)
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Тот же JWT, что используется в REST API.
+        При подключении к WebSocket передаётся в query-параметре:
+        wss://api.contract-hub.internal/ws/comparison/{jobId}?token=eyJ...
+        (Authorization header недоступен из браузерного WebSocket API)
+```
