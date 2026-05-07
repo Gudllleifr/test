@@ -7,10 +7,10 @@ const config = {
   title: 'API Contract Hub',
   tagline: 'Техническая документация',
   favicon: 'img/favicon.ico',
-  url: 'https://itikineva.github.io',
-  baseUrl: '/doc-as-a-code-workshop/',
-  organizationName: 'itikineva',
-  projectName: 'doc-as-a-code-workshop',
+  url: 'https://Gudllleifr.github.io',
+  baseUrl: '/test/',
+  organizationName: 'Gudllleifr',
+  projectName: 'test',
   onBrokenLinks: 'warn',
   onBrokenMarkdownLinks: 'warn',
   trailingSlash: false,
@@ -40,7 +40,7 @@ const config = {
           sidebarPath: './sidebars.js',
           routeBasePath: 'docs',
           editUrl:
-            'https://github.com/itikineva/doc-as-a-code-workshop/edit/main/my-website/',
+              'https://github.com/Gudllleifr/test/edit/main/my-website/',
           remarkPlugins: [simplePlantUML],
         },
         blog: false,
@@ -84,17 +84,12 @@ const config = {
             label: 'Документация',
           },
           {
-            to: '/docs/api/herotask',
-            label: 'API',
-            position: 'left',
-          },
-          {
             to: '/style-guide/',
             label: 'Style Guide',
             position: 'left',
           },
           {
-            href: 'https://github.com/itikineva/doc-as-a-code-workshop',
+            href: https://github.com/Gudllleifr/test',
             label: 'GitHub',
             position: 'right',
           },
@@ -114,10 +109,6 @@ const config = {
                 label: 'Архитектура',
                 to: '/docs/arch',
               },
-              {
-                label: 'API Reference',
-                to: '/docs/api/herotask',
-              },
             ],
           },
           {
@@ -129,7 +120,7 @@ const config = {
               },
               {
                 label: 'Репозиторий',
-                href: 'https://github.com/itikineva/doc-as-a-code-workshop',
+                href: 'https://github.com/Gudllleifr/test',
               },
             ],
           },
