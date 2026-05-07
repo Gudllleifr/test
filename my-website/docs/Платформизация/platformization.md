@@ -31,31 +31,6 @@ description: Замена собственной аутентификации н
 Переход на Auth0 освобождает 20–30 часов разработки, исключает необходимость переписывать аутентификацию в v2.0 и снижает поверхность потенциальных уязвимостей. Таблица `users` в PostgreSQL упрощается: исчезают поля `password_hash`, `failed_login_count`, `locked_until`.
 :::
 
-### Схема интеграции с Auth0 {#auth0-integration}
-
-```plantuml
-@startuml
-actor "Разработчик" as dev
-participant "React UI" as ui
-participant "Auth0\n(Identity Provider)" as auth0
-participant "API Contract Hub\n(Backend)" as backend
-database "PostgreSQL" as db
-
-dev -> ui: Нажать «Войти»
-ui -> auth0: Редирект на Universal Login
-dev -> auth0: Ввести учётные данные
-auth0 -> auth0: Проверить credentials,\nприменить Anti-Brute-Force
-auth0 -> ui: Вернуть JWT (access_token + id_token)
-ui -> backend: Запрос с Bearer JWT
-backend -> auth0: Валидировать JWT подпись (JWKS)
-auth0 -> backend: Публичный ключ
-backend -> backend: Проверить claims:\nrole, exp, iss
-backend -> db: Запрос данных\n(user_id из JWT sub)
-db -> backend: Данные
-backend -> ui: 200 OK
-@enduml
-```
-
 ## Стратегия платформизации API Contract Hub {#platformization}
 
 ### Почему продукт можно вывести на рынок {#market-opportunity}
